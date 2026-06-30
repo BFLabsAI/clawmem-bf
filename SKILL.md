@@ -725,6 +725,15 @@ Symptom: "UserPromptSubmit hook error" on context-surfacing hook (intermittent)
   -> v0.2.4 fix: hook's SQLite busy_timeout was 500ms — too tight. During A-MEM enrichment
      or heavy indexing, watcher write locks exceed 500ms, causing SQLITE_BUSY. Raised to
      5000ms (matches MCP server). Still completes within the 8s outer timeout.
+  -> Large vault + memory-constrained host (intermittent cold-start, even with llama-server):
+     the first/cold call of a session — or any later turn after the OS evicts the page cache —
+     can exceed 8s from fresh Bun start + opening a large index.sqlite (grows with vault size;
+     multi-hundred-MB to >1GB is the trigger) + re-reading dropped pages, NOT inference. On a
+     memory-pressured host (e.g. WSL2 with a low .wslconfig memory cap) the cache is evicted
+     between turns so it recurs on certain turns. Durable fix: more host RAM so the index + Bun
+     modules stay cached; raising the hook `timeout` in settings.json is a secondary margin.
+     `deep` profile also reranks (wider cold window); `balanced` (default) does not. Full detail:
+     docs/troubleshooting.md -> "Hooks slow or near timeout".
 
 Symptom: WSL hangs or becomes unresponsive during long sessions / watcher has 100K+ FDs
   -> Pre-v0.2.3: fs.watch(recursive: true) registered inotify watches on EVERY subdirectory,

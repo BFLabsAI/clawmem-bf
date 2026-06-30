@@ -239,6 +239,17 @@ systemctl --user enable --now clawmem-rerank-health.timer
 
 For remote GPU setups, add `Environment=CLAWMEM_RERANK_URL=http://host:8090` (+ embed/LLM) to the `.service`. `OnFailure=` is the primary alert path; the `curator-nudge` SessionStart hook is a secondary "you missed the page" surface. Run `clawmem rerank-health` (or `--json`) manually any time to check on demand.
 
+### Tuning the context-surfacing hook timeout
+
+`clawmem setup hooks` writes the `context-surfacing` UserPromptSubmit hook with a native `timeout` of **8s** — a deliberate balance (`llama-server` setups run ~200ms; Metal/Vulkan in-process ~4–5s; both fit comfortably). There is **no CLI knob**: the value lives in `~/.claude/settings.json` and you tune it to the host. A timed-out hook **silently discards that turn's `<vault-context>`**, so the symptom is degraded recall, not a visible error.
+
+When you see intermittent `UserPromptSubmit hook timed out after 8s — output discarded`, diagnose before bumping the number:
+
+- **Cold-start, not inference.** Warm calls are sub-second; only the first/cold call of a session — or any later turn after the OS evicts the page cache — is slow. The cost is a fresh Bun process + opening `index.sqlite` + re-reading dropped index pages — not the reranker or LLM. (Tell: a remote `llama-server` answering `/health` in milliseconds while the hook still times out points here.)
+- **Large vault + memory-constrained host is the classic trigger** — and it bites *even with a healthy remote `llama-server`* (the "fast" path). A large `index.sqlite` (multi-hundred-MB to >1GB) on a memory-pressured host (e.g. a WSL2 instance with a low `.wslconfig` `memory` cap) gets its cached index + Bun modules evicted between turns, so cold-start *recurs* — hence intermittent timeouts on *certain* turns. **Durable fix: give the host enough RAM to keep the working set cached** (e.g. raise the WSL2 `memory` cap); a timeout bump is only a secondary margin.
+- **If you raise it**, edit the hook's `timeout` (seconds) in `settings.json` (or re-run `clawmem setup hooks`). 10–12s covers in-process Metal/Vulkan or SQLite-contention headroom; avoid 15s+ as a standing default — the hook blocks prompt submission, so a large ceiling makes every cold prompt feel unresponsive (fix the host or run `llama-server` instead). Full per-setup latency + tradeoff tables: `docs/troubleshooting.md` → *Hooks slow or near timeout*.
+- **Avoid the slow path entirely:** `CLAWMEM_PROFILE=speed` (BM25-only hooks, sub-500ms) or cloud embedding. Note `deep` adds reranking (extra remote round-trips, wider cold window); `balanced` (default) does not rerank.
+
 ---
 
 ## OpenClaw Integration: Memory System Configuration
