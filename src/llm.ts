@@ -325,6 +325,12 @@ export type LlamaCppConfig = {
    */
   remoteLlmModel?: string;
   /**
+   * Optional API key for the remote LLM (chat completion) server.
+   * When set, sent as Authorization: Bearer header with LLM requests.
+   * Env: CLAWMEM_LLM_API_KEY
+   */
+  remoteLlmApiKey?: string;
+  /**
    * Optional top-level reasoning_effort field for Chat Completions endpoints that support it.
    * Example values: none, minimal, low, medium, high, xhigh.
    * Env: CLAWMEM_LLM_REASONING_EFFORT
@@ -391,6 +397,7 @@ export class LlamaCpp implements LLM {
   private modelCacheDir: string;
   private remoteEmbedUrl: string | null;
   private remoteEmbedApiKey: string | null;
+  private remoteLlmApiKey: string | null;
   private remoteEmbedModel: string;
   private remoteLlmUrl: string | null;
   private remoteLlmModel: string;
@@ -426,6 +433,7 @@ export class LlamaCpp implements LLM {
     this.modelCacheDir = config.modelCacheDir || MODEL_CACHE_DIR;
     this.remoteEmbedUrl = config.remoteEmbedUrl || null;
     this.remoteEmbedApiKey = config.remoteEmbedApiKey || null;
+    this.remoteLlmApiKey = config.remoteLlmApiKey || null;
     this.remoteEmbedModel = config.remoteEmbedModel || "embedding";
     this.remoteLlmUrl = config.remoteLlmUrl || null;
     const normalizedRemoteLlmModel = config.remoteLlmModel?.trim();
@@ -1118,9 +1126,11 @@ export class LlamaCpp implements LLM {
       if (this.remoteLlmReasoningEffort) {
         body.reasoning_effort = this.remoteLlmReasoningEffort;
       }
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (this.remoteLlmApiKey) headers["Authorization"] = `Bearer ${this.remoteLlmApiKey}`;
       const resp = await fetch(buildRemoteChatCompletionsUrl(this.remoteLlmUrl!), {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify(body),
         signal,
       });
@@ -1439,6 +1449,7 @@ export function getDefaultLlamaCpp(): LlamaCpp {
       remoteEmbedModel: process.env.CLAWMEM_EMBED_MODEL || undefined,
       remoteLlmUrl: process.env.CLAWMEM_LLM_URL || undefined,
       remoteLlmModel: process.env.CLAWMEM_LLM_MODEL?.trim() || undefined,
+      remoteLlmApiKey: process.env.CLAWMEM_LLM_API_KEY || undefined,
       remoteLlmReasoningEffort: process.env.CLAWMEM_LLM_REASONING_EFFORT || undefined,
       remoteLlmNoThink: (() => {
         const raw = (process.env.CLAWMEM_LLM_NO_THINK || "").trim().toLowerCase();
