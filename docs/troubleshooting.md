@@ -12,6 +12,15 @@ Common issues when running ClawMem with hooks, MCP server, or OpenClaw plugin. O
 - If both snap bun (`/snap/bin/bun`) and native bun (`~/.bun/bin/bun`) are installed, `which bun` may return the snap version. Direct `bun -e` or `bun run` commands will use the wrong binary.
 - Fix: The `bin/clawmem` wrapper handles this automatically. For manual commands, use `~/.bun/bin/bun` explicitly or add `~/.bun/bin` to PATH before `/snap/bin`.
 
+**macOS: `bootstrap` / `doctor` fails with "does not support dynamic extension loading" (sqlite-vec on macOS)**
+- `clawmem bootstrap` (or `clawmem doctor`) fails at the database step because macOS's built-in SQLite — which Bun uses by default — is compiled without extension-loading support, so the `sqlite-vec` vector extension cannot load. Symptom: `✗ Database: ... This build of sqlite3 does not support dynamic extension loading`. Yoloshii/ClawMem#20.
+- Fix: install an extension-capable SQLite via Homebrew, then re-run bootstrap:
+  ```bash
+  brew install sqlite
+  clawmem bootstrap ~/notes --name notes
+  ```
+- ClawMem auto-detects Homebrew's SQLite at the standard prefixes (`/opt/homebrew` on Apple Silicon, `/usr/local` on Intel) and at `brew --prefix sqlite` for non-standard prefixes — installing it is all that's required, no env var or config. If it still fails after `brew install sqlite`, run `brew reinstall sqlite` and confirm `ls $(brew --prefix sqlite)/lib/libsqlite3.dylib` resolves.
+
 ## Embedding & GPU
 
 **"Local model download blocked" error**

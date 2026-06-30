@@ -14,7 +14,7 @@
 
 import { Database } from "bun:sqlite";
 import { Glob } from "bun";
-import { realpathSync } from "node:fs";
+import { realpathSync, existsSync } from "node:fs";
 import * as sqliteVec from "sqlite-vec";
 import {
   LlamaCpp,
@@ -290,14 +290,79 @@ export function toVirtualPath(db: Database, absolutePath: string): string | null
 // Database initialization
 // =============================================================================
 
-// On macOS, use Homebrew's SQLite which supports extensions
+// On macOS, Apple's built-in libsqlite3 — which Bun uses by default — is
+// compiled WITHOUT extension-loading support, so sqliteVec.load() fails with
+// "This build of sqlite3 does not support dynamic extension loading" (Issue #20).
+// Point Bun at an extension-capable SQLite (Homebrew's) via setCustomSQLite()
+// BEFORE the first Database is opened. setCustomSQLite() must receive a path
+// that EXISTS — an invalid path hard-crashes Bun (oven-sh/bun#18811) — so every
+// candidate is existence-checked first. The resolved path (or null) is recorded
+// so loadVecExtension() can emit an actionable error when no extension-capable
+// SQLite is installed, instead of the cryptic extension-loading failure.
+
+/** macOS only: the extension-capable SQLite activated via setCustomSQLite, or null if none was found. */
+let macosCustomSqlitePath: string | null = null;
+
 if (process.platform === "darwin") {
-  const homebrewSqlitePath = "/opt/homebrew/opt/sqlite/lib/libsqlite3.dylib";
+  const candidates = [
+    "/opt/homebrew/opt/sqlite/lib/libsqlite3.dylib", // Homebrew (Apple Silicon)
+    "/usr/local/opt/sqlite/lib/libsqlite3.dylib",    // Homebrew (Intel)
+  ];
+  // For a non-standard Homebrew prefix, ask brew directly — but only when the
+  // standard paths are absent, so the common case pays no subprocess cost.
+  if (!candidates.some(p => existsSync(p))) {
+    try {
+      const brew = Bun.spawnSync(["brew", "--prefix", "sqlite"], { stdout: "pipe", stderr: "ignore" });
+      const prefix = brew.success ? brew.stdout.toString().trim() : "";
+      if (prefix) candidates.push(`${prefix}/lib/libsqlite3.dylib`);
+    } catch { /* brew not installed — nothing more to probe */ }
+  }
+  for (const candidate of candidates) {
+    if (!existsSync(candidate)) continue;
+    try {
+      Database.setCustomSQLite(candidate);
+      macosCustomSqlitePath = candidate;
+      break;
+    } catch { /* not usable — try the next candidate */ }
+  }
+}
+
+/**
+ * Translate a sqlite-vec load failure into an actionable error on macOS, where
+ * the default system SQLite cannot load extensions (Issue #20). Pure + exported
+ * for tests: pass `platform` / `foundPath` explicitly to exercise either branch.
+ * Non-macOS, or any unrelated error, is returned unchanged.
+ */
+export function explainVecLoadError(
+  err: unknown,
+  platform: string = process.platform,
+  foundPath: string | null = macosCustomSqlitePath,
+): Error {
+  const original = err instanceof Error ? err : new Error(String(err));
+  const isExtensionError = /does not support dynamic extension loading/i.test(original.message);
+  if (platform !== "darwin" || !isExtensionError) return original;
+
+  const detail = foundPath === null
+    ? "No Homebrew SQLite was found at the standard locations (/opt/homebrew or /usr/local)."
+    : `A custom SQLite was set from ${foundPath}, but it still cannot load extensions — try 'brew reinstall sqlite'.`;
+  return new Error(
+    "ClawMem could not load the sqlite-vec extension: macOS's built-in SQLite is " +
+    "compiled without extension support.\n" +
+    "Fix: install an extension-capable SQLite with Homebrew, then re-run:\n" +
+    "    brew install sqlite\n" +
+    `${detail}\n` +
+    "More detail: docs/troubleshooting.md (\"Bun runtime\" -> sqlite-vec on macOS), Yoloshii/ClawMem#20.\n" +
+    `Original error: ${original.message}`,
+  );
+}
+
+/** Load the sqlite-vec extension, surfacing an actionable error on macOS (Issue #20). */
+function loadVecExtension(db: Database): void {
   try {
-    if (Bun.file(homebrewSqlitePath).size > 0) {
-      Database.setCustomSQLite(homebrewSqlitePath);
-    }
-  } catch { }
+    sqliteVec.load(db);
+  } catch (err) {
+    throw explainVecLoadError(err);
+  }
 }
 
 function initializeDatabase(db: Database): void {
@@ -312,7 +377,7 @@ function initializeDatabase(db: Database): void {
   // well within the 30s Stop hook timeout. createStore() resets to operational
   // value (5000ms or opts.busyTimeout) after DDL completes. Issue #13.
   db.exec("PRAGMA busy_timeout = 15000");
-  sqliteVec.load(db);
+  loadVecExtension(db);
   db.exec("PRAGMA journal_mode = WAL");
   db.exec("PRAGMA foreign_keys = ON");
 
@@ -1283,7 +1348,7 @@ export function createStore(dbPath?: string, opts?: { readonly?: boolean; busyTi
     // production caller in this repo currently passes readonly:true,
     // but the ordering invariant should hold regardless. Issue #13.
     db.exec(`PRAGMA busy_timeout = ${opts?.busyTimeout ?? 5000}`);
-    sqliteVec.load(db);
+    loadVecExtension(db);
     db.exec("PRAGMA journal_mode = WAL");
     db.exec("PRAGMA query_only = ON");
   }

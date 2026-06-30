@@ -4,6 +4,24 @@ For upgrade instructions (migration steps, opt-in features, verification command
 
 ---
 
+## v0.15.1 — Fix: macOS bootstrap fails to load the sqlite-vec extension (Issue #20)
+
+On macOS, `clawmem bootstrap` (and `clawmem doctor`) failed at the database step with `This build of sqlite3 does not support dynamic extension loading`. Apple's built-in SQLite — which Bun uses by default — is compiled without extension-loading support, so the `sqlite-vec` vector extension cannot load. The prior macOS handling probed only the Apple-Silicon Homebrew path and swallowed the failure silently, so a fresh macOS install with no `brew install sqlite` (and Intel Macs, whose Homebrew prefix differs) hit the bare extension-loading error with no guidance. Yoloshii/ClawMem#20.
+
+What changed:
+
+- **Broader extension-capable SQLite detection** (`src/store.ts`): `setCustomSQLite()` now probes the Apple-Silicon (`/opt/homebrew`) *and* Intel (`/usr/local`) Homebrew prefixes, falling back to `brew --prefix sqlite` for non-standard prefixes (only when the standard paths are absent, so the common case pays no subprocess cost). Every candidate is existence-checked before use — `setCustomSQLite()` with an invalid path hard-crashes Bun (oven-sh/bun#18811), so the existence guard is load-bearing, not cosmetic.
+- **Actionable error instead of the cryptic one** (`src/store.ts`): both `sqlite-vec` load sites now route through a helper that, on macOS, rewrites the "does not support dynamic extension loading" failure into guidance to run `brew install sqlite` (naming the detected SQLite path, or noting none was found). `clawmem bootstrap` and `clawmem doctor` surface this message directly instead of the bare extension error.
+- **Troubleshooting entry** (`docs/troubleshooting.md` → "Bun runtime"): documents the symptom, the `brew install sqlite` fix, and the auto-detection behavior.
+
+### Verification
+
+`bun test tests/unit/` → 1183 pass / 0 fail. A new bug-first test (`tests/unit/store.macos-sqlite.test.ts`, 5 cases) asserts the error mapping: macOS + no Homebrew SQLite → `brew install sqlite` guidance; macOS + a detected-but-failing SQLite → `brew reinstall` + the path; non-macOS and unrelated errors pass through untouched. It fails on the pre-fix source (no mapping existed) and passes after.
+
+### What didn't change
+
+- No change to retrieval, scoring, the vault format, or any non-macOS code path — on Linux/Windows the macOS detection block is skipped entirely and `sqlite-vec` loads exactly as before. This is a macOS-only install fix.
+
 ## v0.15.0 — Agent-instruction refactor (AGENTS.md as lean SSOT) + antipattern durability fix
 
 The agent-facing instruction surface was three overlapping copies — `CLAUDE.md` and `AGENTS.md` were byte-identical 72 KB / 800-line twins (2.2× over Codex's 32 KiB `AGENTS.md` cap, which truncates silently), and `SKILL.md` was an 830-line third copy. All three duplicated each other and the existing `docs/` tree. This release aligns to the convention — `AGENTS.md` is the lean root SSOT, `CLAUDE.md` imports it, `SKILL.md` is on-demand operational guidance, and the deep reference lives in `docs/`. It also fixes a latent scoring bug found during review: `antipattern` memories were decaying despite being documented and intended as durable.
